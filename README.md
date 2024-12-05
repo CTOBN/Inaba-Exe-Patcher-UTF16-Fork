@@ -9,7 +9,7 @@ Ex Patches are a format that allows mod makers to quickly make simple (or somewh
 For documentation on creating and using Ex Patches please check the [Wiki](https://github.com/TekkaGB/Inaba-Exe-Patcher/wiki).
 
 # The "UTF-16" Part
-replacement blocks on this fork support an additional config option called "encoding", which can be any of the following values
+replacement blocks on this fork support an additional config option called "encoding", which can be any of the following values (default is us-ascii)
 - utf-16
 - utf-16BE
 - utf-32
