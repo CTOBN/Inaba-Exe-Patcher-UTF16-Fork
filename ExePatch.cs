@@ -567,7 +567,7 @@ namespace p4gpc.inaba
             {
                 mLogger.WriteLine($"[Inaba Exe Patcher] Unable to parse search encoding option {encodingString} as a form of text encoding." +
                     $" Should be one of {string.Join(", ", Encoding.GetEncodings().Select(current => current.Name))}." +
-                    $" Defaulting to {defaultIfError}.", Color.Red);
+                    $" Defaulting to {defaultIfError.WebName}.", Color.Red);
                 return defaultIfError;
             }
         }
