@@ -295,7 +295,7 @@ namespace p4gpc.inaba
                 int replacementLength = 0;
                 if (patch.PadNull)
                     replacementLength = patch.Pattern.Replace(" ", "").Length / 2;
-                WriteValue(replacement, mBaseAddr + (nuint)result.Offset + (nuint)patch.Offset, patch.Name, replacementLength);
+                WriteValue(replacement, mBaseAddr + (nuint)result.Offset + (nuint)patch.Offset, patch.Name, replacementLength, patch.EncodingSetting);
                 mLogger.WriteLine($"[Inaba Exe Patcher] Applied replacement {patch.Name} from {Path.GetFileName(filePath)} at 0x{mBaseAddr + (nuint)result.Offset + (nuint)patch.Offset:X}");
             }
             
@@ -340,6 +340,7 @@ namespace p4gpc.inaba
             bool padNull = true;
             List<int> indices = new();
             bool allIndices = false;
+            Encoding encoding = Encoding.ASCII;
             Dictionary<string, nuint> variables = new();
             Dictionary<string, string> constants = new();
             Dictionary<string, string> scanConstants = new();
@@ -351,7 +352,7 @@ namespace p4gpc.inaba
                 var patchMatch = Regex.Match(line, @"\[\s*patch\s*(?:\s+(.*?))?\s*\]", RegexOptions.IgnoreCase);
                 if (patchMatch.Success)
                 {
-                    SaveCurrentPatch(currentPatch, patches, patchName, ref pattern, ref order, ref offset, ref padNull, ref allIndices, indices, startReplacement);
+                    SaveCurrentPatch(currentPatch, patches, patchName, ref pattern, ref order, ref offset, ref padNull, ref allIndices, indices, startReplacement, ref encoding);
                     startReplacement = false;
                     startPatch = true;
                     if (patchMatch.Groups.Count > 1)
@@ -365,7 +366,7 @@ namespace p4gpc.inaba
                 var replacementMatch = Regex.Match(line, @"\[\s*replacement\s*(?:\s+(.*?))?\s*\]", RegexOptions.IgnoreCase);
                 if (replacementMatch.Success)
                 {
-                    SaveCurrentPatch(currentPatch, patches, patchName, ref pattern, ref order, ref offset, ref padNull, ref allIndices, indices, startReplacement);
+                    SaveCurrentPatch(currentPatch, patches, patchName, ref pattern, ref order, ref offset, ref padNull, ref allIndices, indices, startReplacement, ref encoding);
                     startReplacement = true;
                     startPatch = false;
                     if (replacementMatch.Groups.Count > 1)
@@ -403,7 +404,7 @@ namespace p4gpc.inaba
                         nuint variableAddress = mem.Allocate((nuint)length).Address;
                         mLogger.WriteLine($"[Inaba Exe Patcher] Allocated {length} byte{(length != 1 ? "s" : "")} for {name} at 0x{variableAddress:X}");
                         if (variableMatch.Groups[3].Success)
-                            WriteValue(variableMatch.Groups[3].Value, variableAddress, name, 0);
+                            WriteValue(variableMatch.Groups[3].Value, variableAddress, name, 0, Encoding.ASCII);
                         variables.Add(name, variableAddress);
                     }
                     catch (Exception ex)
@@ -485,32 +486,16 @@ namespace p4gpc.inaba
                 if (searchMatch.Success)
                 {
                     string value = searchMatch.Groups[1].Value;
-                    if (int.TryParse(value, NumberStyles.Number, culture, out int intValue))
+                    if (int.TryParse(value, NumberStyles.Number, culture, out int intValue) ||
+                        Regex.IsMatch(value, @"[0-9]+f") && float.TryParse(value, NumberStyles.Number, culture, out float floatValue) ||
+                        double.TryParse(value, NumberStyles.Number, culture, out double doubleValue) ||
+                        Regex.Match(value, "\"(.*)\"").Success)
                     {
-                        var bytes = BitConverter.GetBytes(intValue);
-                        pattern = BitConverter.ToString(bytes).Replace("-", " ");
-                    }
-                    else if (Regex.IsMatch(value, @"[0-9]+f") && float.TryParse(value, NumberStyles.Number, culture, out float floatValue))
-                    {
-                        var bytes = BitConverter.GetBytes(floatValue);
-                        pattern = BitConverter.ToString(bytes).Replace("-", " ");
-                    }
-                    else if (double.TryParse(value, NumberStyles.Number, culture, out double doubleValue))
-                    {
-                        var bytes = BitConverter.GetBytes(doubleValue);
-                        pattern = BitConverter.ToString(bytes).Replace("-", " ");
+                        pattern = value;
                     }
                     else
                     {
-                        var stringValueMatch = Regex.Match(value, "\"(.*)\"");
-                        if (!stringValueMatch.Success)
-                        {
-                            mLogger.WriteLine($"[Inaba Exe Patcher] Unable to parse {value} as an int, double, float or string not creating search pattern");
-                            continue;
-                        }
-                        string stringValue = Regex.Unescape(stringValueMatch.Groups[1].Value);
-                        var bytes = Encoding.ASCII.GetBytes(stringValue);
-                        pattern = BitConverter.ToString(bytes).Replace("-", " ");
+                        mLogger.WriteLine($"[Inaba Exe Patcher] Unable to parse {value} as an int, double, float or string not creating search pattern");
                     }
                     continue;
                 }
@@ -554,25 +539,48 @@ namespace p4gpc.inaba
                     continue;
                 }
 
+                // Search for encoding method used for string. Ignored if value isn't string
+                var encodingMatch = Regex.Match(line, @"^\s*encoding\s*=\s*(.+)", RegexOptions.IgnoreCase);
+                if (encodingMatch.Success)
+                {
+                    encoding = ParseEncoding(encodingMatch.Groups[1].Value, Encoding.ASCII);
+                }
+
                 // Add the line as a part of the patch's function
                 if (startPatch)
                     currentPatch.Add(line);
             }
+
             if (startReplacement || startPatch)
-                SaveCurrentPatch(currentPatch, patches, patchName, ref pattern, ref order, ref offset, ref padNull, ref allIndices, indices, startReplacement);
+                SaveCurrentPatch(currentPatch, patches, patchName, ref pattern, ref order, ref offset, ref padNull, ref allIndices, indices, startReplacement, ref encoding);
             FillInVariables(patches, variables, constants);
             return (patches, scanConstants);
         }
 
+        private Encoding ParseEncoding(string encodingString, Encoding defaultIfError)
+        {
+            try
+            {
+                return Encoding.GetEncoding(encodingString);
+            }
+            catch (ArgumentException ex)
+            {
+                mLogger.WriteLine($"[Inaba Exe Patcher] Unable to parse search encoding option {encodingString} as a form of text encoding." +
+                    $" Should be one of {string.Join(", ", Encoding.GetEncodings().Select(current => current.Name))}." +
+                    $" Defaulting to {defaultIfError}.", Color.Red);
+                return defaultIfError;
+            }
+        }
+
         private void SaveCurrentPatch(List<string> currentPatch, List<ExPatch> patches, string patchName, ref string pattern, 
-            ref string order, ref int offset, ref bool padNull, ref bool allIndices, List<int> indices, bool isReplacement)
+            ref string order, ref int offset, ref bool padNull, ref bool allIndices, List<int> indices, bool isReplacement, ref Encoding encoding)
         {
             if (currentPatch.Count > 0)
             {
                 indices.Sort();
                 if (!isReplacement)
                     currentPatch.Insert(0, Environment.Is64BitProcess ? "use64" : "use32");
-                patches.Add(new ExPatch(patchName, pattern, currentPatch.ToArray(), order, offset, isReplacement, padNull, new List<int>(indices), allIndices));
+                patches.Add(new ExPatch(patchName, pattern, currentPatch.ToArray(), order, offset, isReplacement, padNull, new List<int>(indices), allIndices, encoding, culture, mLogger));
             }
             currentPatch.Clear();
             indices.Clear();
@@ -581,6 +589,7 @@ namespace p4gpc.inaba
             offset = 0;
             padNull = true;
             allIndices = false;
+            encoding = Encoding.ASCII;
         }
 
         /// <summary>
@@ -637,7 +646,7 @@ namespace p4gpc.inaba
         /// <param name="address">The address to write to</param>
         /// <param name="name">The name of the variable this is for</param>
         /// <param name="stringLength">The length of the string that should be written, if <paramref name="value"/> is shorter than this it will be padded with null characters. This has no effect if <paramref name="value"/> is not written as a string</param>
-        private void WriteValue(string value, nuint address, string name, int stringLength)
+        private void WriteValue(string value, nuint address, string name, int stringLength, Encoding encodingSetting)
         {
             Match match;
             match = Regex.Match(value, @"^([+-])?(0x|0b)?([0-9A-Fa-f]+)(u)?$");
@@ -805,7 +814,7 @@ namespace p4gpc.inaba
                 return;
             }
             string stringValue = Regex.Unescape(stringValueMatch.Groups[1].Value);
-            var stringBytes = Encoding.ASCII.GetBytes(stringValue);
+            var stringBytes = encodingSetting.GetBytes(stringValue);
             if (stringBytes.Length < stringLength)
             {
                 List<byte> byteList = stringBytes.ToList();
